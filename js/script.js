@@ -12,7 +12,8 @@ let syncIndex = 0;
 
 // State for custom songs
 let customSongs = JSON.parse(localStorage.getItem('mySongs')) || [];
-let apiKey = localStorage.getItem('geminiApiKey') || '';
+const envKey = (window.CONFIG && window.CONFIG.GEMINI_API_KEY) ? window.CONFIG.GEMINI_API_KEY : '';
+let apiKey = envKey || localStorage.getItem('geminiApiKey') || '';
 
 // DOM Elements
 const els = {
@@ -28,7 +29,16 @@ const els = {
     newSongUrl: document.getElementById('newSongUrl'),
     newSongTitle: document.getElementById('newSongTitle'),
     newSongArtist: document.getElementById('newSongArtist'),
+    newSongLyrics: document.getElementById('newSongLyrics'), // New
     generateBtn: document.getElementById('generateLyricsBtn'),
+
+    // Editor Elements
+    editorModal: document.getElementById('editorModal'),
+    closeEditorBtn: document.getElementById('closeEditorBtn'),
+    saveEditorBtn: document.getElementById('saveEditorBtn'),
+    addLyricLineBtn: document.getElementById('addLyricLineBtn'),
+    editorRows: document.getElementById('editorRows'),
+
     syncModal: document.getElementById('syncModal'),
     syncCurrent: document.getElementById('syncCurrentLine'),
     syncNext: document.getElementById('syncNextLine'),
@@ -43,7 +53,7 @@ const els = {
 // Initialize
 function init() {
     // Load API Key
-    if (apiKey) els.apiKeyInput.value = apiKey;
+    if (apiKey && els.apiKeyInput) els.apiKeyInput.value = apiKey;
 
     loadSong('default');
     setupEventListeners();
@@ -92,7 +102,7 @@ function renderLyrics() {
 
         div.innerHTML = `
             <div class="flex items-start gap-4">
-                <div class="text-xs font-mono text-gray-400 mt-1 min-w-[40px]">${line.time !== undefined ? formatTime(line.time) : '--:--'}</div>
+                <div class="text-xs font-mono text-gray-400 mt-1 min-w-[40px]">${line.time !== undefined && line.time !== null ? formatTime(line.time) : '--:--'}</div>
                 <div class="flex-1">
                     <p class="jp-text text-lg text-gray-800 mb-1 leading-relaxed">${line.jp || ''}</p>
                     <p class="text-sm text-blue-500 font-medium mb-1">${line.ro || ''}</p>
@@ -105,7 +115,7 @@ function renderLyrics() {
         `;
 
         div.addEventListener('click', () => {
-            if (line.time !== undefined) seekToLine(index);
+            if (line.time !== undefined && line.time !== null) seekToLine(index);
         });
 
         els.lyricsContainer.appendChild(div);
@@ -127,14 +137,16 @@ function setupEventListeners() {
     els.closeLibraryBtn.addEventListener('click', () => els.libraryModal.classList.add('hidden'));
 
     // API Key
-    els.saveKeyBtn.addEventListener('click', () => {
-        apiKey = els.apiKeyInput.value.trim();
-        localStorage.setItem('geminiApiKey', apiKey);
-        alert('API Key Saved!');
-    });
+    if (els.saveKeyBtn) {
+        els.saveKeyBtn.addEventListener('click', () => {
+            apiKey = els.apiKeyInput.value.trim();
+            localStorage.setItem('geminiApiKey', apiKey);
+            alert('API Key Saved!');
+        });
+    }
 
     // Generate
-    els.generateBtn.addEventListener('click', handleGenerate);
+    if (els.generateBtn) els.generateBtn.addEventListener('click', handleGenerate);
 
     // Saved Song Click Delegation
     els.savedSongsList.addEventListener('click', (e) => {
@@ -162,6 +174,11 @@ function setupEventListeners() {
         if (player) player.playVideo();
         els.syncPlayBtn.classList.add('hidden');
     });
+
+    // Editor
+    els.closeEditorBtn.addEventListener('click', () => els.editorModal.classList.add('hidden'));
+    els.saveEditorBtn.addEventListener('click', saveEditorChanges);
+    els.addLyricLineBtn.addEventListener('click', () => addEditorRow({}));
 }
 
 // --- Logic Modules ---
@@ -170,6 +187,7 @@ async function handleGenerate() {
     const url = els.newSongUrl.value.trim();
     const title = els.newSongTitle.value.trim();
     const artist = els.newSongArtist.value.trim();
+    const pastedLyrics = els.newSongLyrics ? els.newSongLyrics.value.trim() : "";
 
     if (!apiKey) return alert('Please enter and save your Gemini API Key first.');
     if (!url || !title) return alert('Please enter YouTube URL and Song Title.');
@@ -181,11 +199,18 @@ async function handleGenerate() {
     // UI Loading
     const btn = els.generateBtn;
     const originalText = btn.innerHTML;
-    btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Generating...';
+    btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Processing...';
     btn.disabled = true;
 
     try {
-        const lyrics = await fetchLyricsFromGemini(title, artist);
+        let lyrics;
+        if (pastedLyrics) {
+            // Use pasted lyrics
+            lyrics = await fetchFormattedLyricsFromGemini(pastedLyrics, title, artist);
+        } else {
+            // Generate from scratch
+            lyrics = await fetchLyricsFromGemini(title, artist);
+        }
 
         // Start Sync Mode
         startSyncMode(lyrics, { title, artist, videoId });
@@ -205,18 +230,48 @@ function extractVideoId(url) {
     return (match && match[2].length === 11) ? match[2] : null;
 }
 
+// Format existing lyrics
+async function fetchFormattedLyricsFromGemini(pastedText, title, artist) {
+    const prompt = `
+        I have the raw lyrics for the song "${title}" by "${artist}". 
+        Please format them into a JSON array for my app.
+        
+        Raw Lyrics:
+        """
+        ${pastedText}
+        """
+
+        Return ONLY a raw JSON array. Do not include markdown formatting like \`\`\`json.
+        Each item in the array represents a line and should have:
+        "time": Best guess timestamp in seconds (number) relative to start. estimating is okay.
+        "jp": The lyric line from the text above (keep original language).
+        "ro": Romaji (OR transliteration if not English).
+        "cn": Traditional Chinese translation of this line.
+        Break lines naturally.
+    `;
+    return callGemini(prompt);
+}
+
+// Generate new lyrics
 async function fetchLyricsFromGemini(title, artist) {
     const prompt = `
-        Generate lyrics for the song "${title}" by "${artist}".
+        Generate the lyrics for the song "${title}" by "${artist}".
+        Please be as ACCURATE as possible with the original lyrics. 
+        Do not make up lyrics. If you don't know the song perfectly, return a JSON error.
+
         Return ONLY a raw JSON array. Do not include markdown formatting like \`\`\`json.
         Each item should have:
-        "jp": Japanese lyrics (or original language),
-        "ro": Romaji (if Japanese) or transliteration,
+        "time": Best guess timestamp in seconds (number). estimating is okay.
+        "jp": Japanese lyrics (or original language).
+        "ro": Romaji (if Japanese) or transliteration.
         "cn": Traditional Chinese translation.
         Break lines naturally.
     `;
+    return callGemini(prompt);
+}
 
-    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key=${apiKey}`, {
+async function callGemini(prompt) {
+    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent?key=${apiKey}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -233,6 +288,30 @@ async function fetchLyricsFromGemini(title, artist) {
 }
 
 function startSyncMode(lyrics, meta) {
+    // Check if AI provided times
+    const hasTimes = lyrics.every(l => typeof l.time === 'number');
+
+    if (hasTimes) {
+        // Ask user choice
+        const useAI = confirm('AI has estimated timestamps.\n\nOK: Use AI timings (Fast, but might be inaccurate)\nCancel: Sync Manually (Recommended for accuracy)');
+
+        if (useAI) {
+            // Direct Save!
+            const newSong = {
+                id: Date.now().toString(),
+                title: meta.title,
+                artist: meta.artist,
+                videoId: meta.videoId,
+                lyrics: lyrics
+            };
+            customSongs.push(newSong);
+            localStorage.setItem('mySongs', JSON.stringify(customSongs));
+            renderSongList();
+            loadSong(newSong.id);
+            return;
+        }
+    }
+
     syncMode = true;
     syncData = lyrics.map(l => ({ ...l, time: null })); // clear times
     syncIndex = 0;
@@ -311,9 +390,14 @@ function renderSongList() {
                     <p class="text-xs text-gray-500">${song.artist}</p>
                 </div>
             </div>
-            <button class="text-red-400 hover:text-red-600 px-2 stop-prop" onclick="deleteSong('${song.id}', event)">
-                <i class="fas fa-trash"></i>
-            </button>
+            <div class="flex gap-1">
+                <button class="text-blue-400 hover:text-blue-600 px-2 stop-prop" onclick="editSong('${song.id}', event)">
+                    <i class="fas fa-edit"></i>
+                </button>
+                <button class="text-red-400 hover:text-red-600 px-2 stop-prop" onclick="deleteSong('${song.id}', event)">
+                    <i class="fas fa-trash"></i>
+                </button>
+            </div>
         `;
         els.savedSongsList.appendChild(div);
     });
@@ -328,6 +412,89 @@ window.deleteSong = function (id, event) {
     renderSongList();
 
     if (currentSongId === id) loadSong('default');
+}
+
+window.editSong = function (id, event) {
+    if (event) event.stopPropagation();
+    const song = customSongs.find(s => s.id === id);
+    if (!song) return;
+
+    openEditor(song);
+}
+
+// --- Editor Logic ---
+let editingSongId = null;
+
+function openEditor(song) {
+    editingSongId = song.id;
+    els.editorRows.innerHTML = '';
+
+    // Sort logic to ensure times are valid numbers for sorting, treating null as infinity or 0 depending on pref. 
+    // Ideally lyrics are sorted by time.
+    const sortedLyrics = [...song.lyrics].sort((a, b) => (a.time || 0) - (b.time || 0));
+
+    sortedLyrics.forEach(line => addEditorRow(line));
+    els.editorModal.classList.remove('hidden');
+    els.libraryModal.classList.add('hidden'); // hide library
+}
+
+function addEditorRow(line) {
+    const tr = document.createElement('tr');
+    tr.className = "hover:bg-gray-50";
+    tr.innerHTML = `
+        <td class="p-1">
+            <input type="number" step="0.1" class="w-full border border-gray-300 rounded px-1 py-1 text-xs text-center font-mono" value="${line.time !== null && line.time !== undefined ? line.time : ''}" placeholder="--">
+        </td>
+        <td class="p-1">
+            <input type="text" class="w-full border border-gray-300 rounded px-2 py-1 text-sm" value="${line.jp || ''}">
+        </td>
+        <td class="p-1">
+            <input type="text" class="w-full border border-gray-300 rounded px-2 py-1 text-sm text-gray-600" value="${line.ro || ''}">
+        </td>
+        <td class="p-1">
+            <input type="text" class="w-full border border-gray-300 rounded px-2 py-1 text-sm text-gray-600" value="${line.cn || ''}">
+        </td>
+        <td class="p-1 text-center">
+            <button class="text-red-400 hover:text-red-600" onclick="this.closest('tr').remove()"><i class="fas fa-times"></i></button>
+        </td>
+    `;
+    els.editorRows.appendChild(tr);
+}
+
+function saveEditorChanges() {
+    if (!editingSongId) return;
+
+    const rows = Array.from(els.editorRows.children);
+    const newLyrics = rows.map(tr => {
+        const inputs = tr.querySelectorAll('input');
+        const timeVal = inputs[0].value;
+        return {
+            time: timeVal !== '' ? parseFloat(timeVal) : null,
+            jp: inputs[1].value,
+            ro: inputs[2].value,
+            cn: inputs[3].value
+        };
+    }).filter(l => l.jp || l.cn); // Filter empty
+
+    // Sort by time
+    newLyrics.sort((a, b) => (a.time || 0) - (b.time || 0));
+
+    // Update data
+    const songIndex = customSongs.findIndex(s => s.id === editingSongId);
+    if (songIndex !== -1) {
+        customSongs[songIndex].lyrics = newLyrics;
+        localStorage.setItem('mySongs', JSON.stringify(customSongs));
+
+        // Reload if current
+        if (currentSongId === editingSongId) {
+            loadSong(editingSongId);
+        }
+
+        renderSongList(); // Update library UI
+    }
+
+    els.editorModal.classList.add('hidden');
+    els.libraryModal.classList.remove('hidden'); // Show library again
 }
 
 // --- Utils ---
@@ -417,15 +584,9 @@ function checkTime() {
         if (t !== null && currentTime >= t) {
             activeIndex = i;
         } else {
-            // Since we might have null times if not perfectly synced, we should be careful.
-            // But usually sorted.
             if (t !== null) break;
         }
     }
-
-    // Correction for logic: if we hit a break, it means we passed the candidate.
-    // However, if lyrics are not sorted by time or have gaps, this loop is fragile.
-    // Assuming sorted.
 
     if (activeIndex !== currentLyricIndex) {
         updateActiveLyric(activeIndex);
