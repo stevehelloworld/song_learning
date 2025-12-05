@@ -1,0 +1,43 @@
+@import url('https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;500;700&family=Noto+Sans+TC:wght@400;500;700&display=swap');
+
+body {
+    font-family: 'Noto Sans TC', 'Noto Sans JP', sans-serif;
+    background-color: #f3f4f6;
+}
+
+.lyric-item {
+    transition: all 0.3s ease;
+    border-left: 4px solid transparent;
+}
+
+.lyric-item:hover {
+    background-color: #e5e7eb;
+    cursor: pointer;
+}
+
+.lyric-item.active {
+    background-color: #eff6ff;
+    border-left: 4px solid #3b82f6;
+    transform: scale(1.02);
+    box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+}
+
+.lyric-item.active .jp-text {
+    color: #1d4ed8;
+    font-weight: 700;
+}
+
+/* Hide scrollbar for cleaner look but keep functionality */
+.no-scrollbar::-webkit-scrollbar {
+    display: none;
+}
+
+.no-scrollbar {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+}
+
+/* Error Overlay */
+#error-overlay {
+    display: none;
+}
